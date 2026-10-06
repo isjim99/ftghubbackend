@@ -31,6 +31,14 @@ export default async function handler(req, res) {
     });
   }
 
+  const externalGameId = String(game.external_game_id || '').trim();
+  if (!externalGameId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Missing game.external_game_id'
+    });
+  }
+
   const client = await db().connect();
 
   try {
@@ -47,6 +55,27 @@ export default async function handler(req, res) {
     );
 
     const event = eventResult.rows[0];
+
+    const existingGameResult = await client.query(
+      `select id, external_game_id
+       from ftg_games
+       where event_id = $1 and game_number = $2
+       for update`,
+      [event.id, String(game.game_number)]
+    );
+
+    const existingGame = existingGameResult.rows[0];
+    if (
+      existingGame &&
+      String(existingGame.external_game_id || '').trim() &&
+      String(existingGame.external_game_id).trim() !== externalGameId
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        ok: false,
+        error: 'Game number conflict: this event/game number belongs to a different captured game'
+      });
+    }
 
     const gameResult = await client.query(
       `insert into ftg_games (
@@ -102,7 +131,7 @@ export default async function handler(req, res) {
          status`,
       [
         event.id,
-        String(game.external_game_id || ''),
+        externalGameId,
         String(game.game_number || '1'),
         game.game_date || null,
         game.game_time || null,
